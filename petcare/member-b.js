@@ -2,6 +2,7 @@
   const state = {
     pets: [],
     analysisImageData: '',
+    analysisImageMeta: null,
     latestAnalysis: null,
     latestReport: null
   };
@@ -10,6 +11,12 @@
     year: 'numeric',
     month: 'long'
   });
+
+  const ANALYSIS_UPLOAD_GUIDE = {
+    appearance: '建议拍摄宠物正面或侧面全身照，保证眼睛、耳朵、鼻口和整体精神状态清晰可见。',
+    stool: '建议在自然光下拍摄单次粪便照片，尽量包含颜色、成形度和周边参照物。',
+    skin: '建议近距离拍摄皮肤或毛发表面问题区域，尽量让红斑、皮屑、破损部位清晰可见。'
+  };
 
   function $(id) {
     return document.getElementById(id);
@@ -76,6 +83,34 @@
     return REPORT_MONTH_FORMATTER.format(new Date(year, month - 1, 1));
   }
 
+  function formatFileSize(bytes) {
+    const size = Number(bytes || 0);
+    if (!size) return '0 KB';
+    if (size >= 1024 * 1024) return `${(size / (1024 * 1024)).toFixed(2)} MB`;
+    return `${Math.max(1, Math.round(size / 1024))} KB`;
+  }
+
+  function getAnalysisTypeLabel(analysisType) {
+    return ({
+      appearance: '外观',
+      stool: '粪便',
+      skin: '皮肤'
+    })[analysisType] || analysisType || '健康';
+  }
+
+  function updateUploadHint() {
+    const hint = $('aiUploadHint');
+    if (!hint) return;
+    const analysisType = $('analysisType')?.value || 'appearance';
+    hint.textContent = ANALYSIS_UPLOAD_GUIDE[analysisType] || ANALYSIS_UPLOAD_GUIDE.appearance;
+  }
+
+  function updateAnalysisButtonState() {
+    const button = $('runAiAnalysisBtn');
+    if (!button) return;
+    button.disabled = !(hasToken() && getSelectedPet('aiPetSelect') && state.analysisImageData);
+  }
+
   function getSelectedPet(selectId) {
     const petId = $(selectId)?.value;
     return state.pets.find(item => item.id === petId) || null;
@@ -109,6 +144,7 @@
       setEmptyState('analysisHistoryList', '登录并添加宠物后，这里会显示 AI 分析记录。');
       setEmptyState('nutritionResult', '选择宠物后可生成个性化营养搭配方案。');
       setEmptyState('reportResult', '选择宠物和月份后可生成月度健康报表。');
+      updateAnalysisButtonState();
       return;
     }
 
@@ -126,6 +162,7 @@
         select.value = state.pets[0].id;
       }
     });
+    updateAnalysisButtonState();
   }
 
   async function fetchPetsForMemberB() {
@@ -147,11 +184,14 @@
 
   function resetAnalysisComposer() {
     state.analysisImageData = '';
-    const fileInput = $('aiPhotoInput');
+    state.analysisImageMeta = null;
+    const cameraInput = $('aiCameraInput');
+    const galleryInput = $('aiGalleryInput');
     const notes = $('aiNotes');
     const preview = $('aiPreviewArea');
 
-    if (fileInput) fileInput.value = '';
+    if (cameraInput) cameraInput.value = '';
+    if (galleryInput) galleryInput.value = '';
     if (notes) notes.value = '';
     if (preview) {
       preview.innerHTML = `
@@ -160,24 +200,23 @@
         <p style="margin: 0; color: var(--text-light); line-height: 1.6;">支持宠物外观、粪便和皮肤照片。单张不超过 10MB。</p>
       `;
     }
+    updateUploadHint();
+    updateAnalysisButtonState();
   }
 
   function bindUploadArea() {
     const dropzone = $('aiUploadDropzone');
-    const fileInput = $('aiPhotoInput');
-    const buttons = ['aiUploadBtn', 'aiGalleryBtn'];
+    const cameraInput = $('aiCameraInput');
+    const galleryInput = $('aiGalleryInput');
 
-    if (!dropzone || !fileInput) return;
+    if (!dropzone || !cameraInput || !galleryInput) return;
 
-    buttons.forEach(id => {
-      const button = $(id);
-      if (!button) return;
-      button.addEventListener('click', () => fileInput.click());
-    });
+    $('aiUploadBtn')?.addEventListener('click', () => cameraInput.click());
+    $('aiGalleryBtn')?.addEventListener('click', () => galleryInput.click());
 
     dropzone.addEventListener('click', event => {
       if (event.target.closest('button')) return;
-      fileInput.click();
+      galleryInput.click();
     });
 
     ['dragenter', 'dragover'].forEach(eventName => {
@@ -197,19 +236,49 @@
     dropzone.addEventListener('drop', event => {
       const [file] = Array.from(event.dataTransfer.files || []);
       if (file) {
-        handleSelectedFile(file);
+        handleSelectedFile(file, 'drop');
       }
     });
 
-    fileInput.addEventListener('change', event => {
+    cameraInput.addEventListener('change', event => {
       const [file] = Array.from(event.target.files || []);
       if (file) {
-        handleSelectedFile(file);
+        handleSelectedFile(file, 'camera');
+      }
+    });
+
+    galleryInput.addEventListener('change', event => {
+      const [file] = Array.from(event.target.files || []);
+      if (file) {
+        handleSelectedFile(file, 'gallery');
       }
     });
   }
 
-  function handleSelectedFile(file) {
+  function renderSelectedPreview() {
+    const preview = $('aiPreviewArea');
+    if (!preview || !state.analysisImageData || !state.analysisImageMeta) return;
+
+    const sourceLabel = state.analysisImageMeta.source === 'camera'
+      ? '拍照上传'
+      : state.analysisImageMeta.source === 'drop'
+        ? '拖拽上传'
+        : '相册上传';
+
+    preview.innerHTML = `
+      <img src="${escapeHtml(state.analysisImageData)}" alt="上传预览">
+      <div class="upload-preview-copy">
+        <strong>已选择${escapeHtml(getAnalysisTypeLabel($('analysisType')?.value || state.analysisImageMeta.analysisType))}照片</strong>
+        <div class="upload-meta">
+          <span class="upload-meta-chip">${escapeHtml(state.analysisImageMeta.name)}</span>
+          <span class="upload-meta-chip">${escapeHtml(formatFileSize(state.analysisImageMeta.size))}</span>
+          <span class="upload-meta-chip">${escapeHtml(sourceLabel)}</span>
+        </div>
+      </div>
+    `;
+  }
+
+  function handleSelectedFile(file, source = 'gallery') {
     if (!file.type.startsWith('image/')) {
       showToastSafe('请选择图片文件');
       return;
@@ -223,13 +292,14 @@
     const reader = new FileReader();
     reader.onload = () => {
       state.analysisImageData = reader.result;
-      const preview = $('aiPreviewArea');
-      if (preview) {
-        preview.innerHTML = `
-          <img src="${escapeHtml(reader.result)}" alt="上传预览">
-          <div class="member-b-status normal">已选择 ${escapeHtml(file.name)}</div>
-        `;
-      }
+      state.analysisImageMeta = {
+        name: file.name,
+        size: file.size,
+        source,
+        analysisType: $('analysisType')?.value || 'appearance'
+      };
+      renderSelectedPreview();
+      updateAnalysisButtonState();
     };
     reader.readAsDataURL(file);
   }
@@ -635,7 +705,14 @@
     bindUploadArea();
 
     $('runAiAnalysisBtn')?.addEventListener('click', submitAiAnalysis);
-    $('aiPetSelect')?.addEventListener('change', loadAnalysisHistory);
+    $('aiPetSelect')?.addEventListener('change', () => {
+      updateAnalysisButtonState();
+      loadAnalysisHistory();
+    });
+    $('analysisType')?.addEventListener('change', () => {
+      updateUploadHint();
+      renderSelectedPreview();
+    });
     $('resetAiComposerBtn')?.addEventListener('click', resetAnalysisComposer);
 
     $('loadNutritionBtn')?.addEventListener('click', loadNutritionPlan);
@@ -687,6 +764,9 @@
     } else {
       syncPetSelectOptions();
     }
+
+    updateUploadHint();
+    updateAnalysisButtonState();
   }
 
   document.addEventListener('DOMContentLoaded', init);

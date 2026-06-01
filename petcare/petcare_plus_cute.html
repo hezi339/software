@@ -1629,7 +1629,11 @@
                             <p style="margin: 0; color: var(--text-light); line-height: 1.6;">支持宠物外观、粪便和皮肤照片。单张不超过 10MB。</p>
                         </div>
                     </div>
-                    <input class="hidden-input" type="file" id="aiPhotoInput" accept="image/*">
+                    <div class="upload-helper">
+                        <div id="aiUploadHint" class="upload-hint">建议拍摄清晰、明亮、聚焦明确的单张照片，方便后续 AI 分析识别。</div>
+                    </div>
+                    <input class="hidden-input" type="file" id="aiCameraInput" accept="image/*" capture="environment">
+                    <input class="hidden-input" type="file" id="aiGalleryInput" accept="image/*">
                     <div class="member-b-actions">
                         <button class="btn btn-primary" id="aiUploadBtn">
                             <i class="fas fa-camera"></i> 拍照 / 上传
@@ -1648,7 +1652,7 @@
                         <textarea id="aiNotes" placeholder="例如：昨天开始抓挠变多、便便偏软、最近换了新粮……"></textarea>
                     </div>
                     <div class="member-b-actions">
-                        <button class="btn btn-primary" id="runAiAnalysisBtn">
+                        <button class="btn btn-primary" id="runAiAnalysisBtn" disabled>
                             <i class="fas fa-wand-magic-sparkles"></i> 开始分析
                         </button>
                     </div>
