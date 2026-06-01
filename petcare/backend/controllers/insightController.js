@@ -349,7 +349,7 @@ function mapAnalysisRow(row) {
 }
 
 exports.createAiAnalysis = async (req, res) => {
-  const { userId } = req.user;
+  const { id: userId } = req.user;
   const { petId } = req.params;
   const {
     analysis_type,
@@ -444,7 +444,7 @@ exports.createAiAnalysis = async (req, res) => {
 };
 
 exports.getAiAnalyses = async (req, res) => {
-  const { userId } = req.user;
+  const { id: userId } = req.user;
   const { petId } = req.params;
   const limit = Math.min(Number(req.query.limit || 12), 30);
 
@@ -470,7 +470,7 @@ exports.getAiAnalyses = async (req, res) => {
 };
 
 exports.getNutritionPlan = async (req, res) => {
-  const { userId } = req.user;
+  const { id: userId } = req.user;
   const { petId } = req.params;
 
   try {
@@ -504,7 +504,7 @@ exports.getNutritionPlan = async (req, res) => {
 };
 
 exports.getMonthlyReport = async (req, res) => {
-  const { userId } = req.user;
+  const { id: userId } = req.user;
   const { petId } = req.params;
   const month = req.query.month || new Date().toISOString().slice(0, 7);
   const range = getMonthRange(month);

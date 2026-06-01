@@ -278,7 +278,73 @@
     `;
   }
 
-  function handleSelectedFile(file, source = 'gallery') {
+  function readFileAsDataUrl(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(reader.error || new Error('文件读取失败'));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  function loadImageElement(dataUrl) {
+    return new Promise((resolve, reject) => {
+      const image = new Image();
+      image.onload = () => resolve(image);
+      image.onerror = () => reject(new Error('图片加载失败'));
+      image.src = dataUrl;
+    });
+  }
+
+  async function prepareImageForAnalysis(file) {
+    const originalDataUrl = await readFileAsDataUrl(file);
+
+    if (!/^image\/(png|webp|bmp|gif)$/i.test(file.type || '')) {
+      return {
+        dataUrl: originalDataUrl,
+        mimeType: file.type || 'image/jpeg'
+      };
+    }
+
+    try {
+      const image = await loadImageElement(originalDataUrl);
+      const maxSide = 1600;
+      const naturalWidth = image.naturalWidth || image.width;
+      const naturalHeight = image.naturalHeight || image.height;
+      const scale = Math.min(1, maxSide / Math.max(naturalWidth, naturalHeight));
+      const width = Math.max(1, Math.round(naturalWidth * scale));
+      const height = Math.max(1, Math.round(naturalHeight * scale));
+      const canvas = document.createElement('canvas');
+      const context = canvas.getContext('2d');
+
+      if (!context) {
+        return {
+          dataUrl: originalDataUrl,
+          mimeType: file.type || 'image/jpeg'
+        };
+      }
+
+      canvas.width = width;
+      canvas.height = height;
+
+      // 用白底导出 JPEG，提升远程视觉模型对 PNG 等图片的兼容性。
+      context.fillStyle = '#ffffff';
+      context.fillRect(0, 0, width, height);
+      context.drawImage(image, 0, 0, width, height);
+
+      return {
+        dataUrl: canvas.toDataURL('image/jpeg', 0.9),
+        mimeType: 'image/jpeg'
+      };
+    } catch (error) {
+      return {
+        dataUrl: originalDataUrl,
+        mimeType: file.type || 'image/jpeg'
+      };
+    }
+  }
+
+  async function handleSelectedFile(file, source = 'gallery') {
     if (!file.type.startsWith('image/')) {
       showToastSafe('请选择图片文件');
       return;
@@ -289,19 +355,22 @@
       return;
     }
 
-    const reader = new FileReader();
-    reader.onload = () => {
-      state.analysisImageData = reader.result;
+    try {
+      const preparedImage = await prepareImageForAnalysis(file);
+      state.analysisImageData = preparedImage.dataUrl;
       state.analysisImageMeta = {
         name: file.name,
         size: file.size,
         source,
+        mimeType: preparedImage.mimeType,
         analysisType: $('analysisType')?.value || 'appearance'
       };
       renderSelectedPreview();
       updateAnalysisButtonState();
-    };
-    reader.readAsDataURL(file);
+    } catch (error) {
+      console.error('Image preparation failed:', error);
+      showToastSafe('图片处理失败，请重新选择后再试');
+    }
   }
 
   function renderAnalysisResult(data) {

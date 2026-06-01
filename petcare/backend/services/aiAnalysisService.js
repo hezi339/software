@@ -1,3 +1,5 @@
+require('../loadEnv');
+
 const ANALYSIS_TYPES = {
   appearance: {
     label: '外观',
