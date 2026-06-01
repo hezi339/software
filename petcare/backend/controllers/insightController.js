@@ -1,3 +1,5 @@
+const fs = require('fs');
+const PDFDocument = require('pdfkit');
 const { v4: uuidv4 } = require('uuid');
 const db = require('../db');
 const { analyzePetImage } = require('../services/aiAnalysisService');
@@ -6,6 +8,24 @@ const ANALYSIS_TYPE_LABELS = {
   appearance: '外观',
   stool: '粪便',
   skin: '皮肤'
+};
+
+exports.exportMonthlyReportPdf = async (req, res) => {
+  const { id: userId } = req.user;
+  const { petId } = req.params;
+  const month = req.query.month || new Date().toISOString().slice(0, 7);
+
+  try {
+    const result = await buildMonthlyReportForPet({ userId, petId, month });
+    if (result.error) {
+      return res.status(result.error.status).json({ message: result.error.message });
+    }
+
+    streamMonthlyReportPdf(res, result.report);
+  } catch (error) {
+    console.error('exportMonthlyReportPdf error:', error);
+    res.status(500).json({ message: 'PDF 导出失败，请稍后重试' });
+  }
 };
 
 function dbGet(sql, params = []) {
@@ -553,6 +573,180 @@ function buildMonthlyReport({
   };
 }
 
+async function buildMonthlyReportForPet({ userId, petId, month }) {
+  const range = getMonthRange(month);
+  if (!range) {
+    return { error: { status: 400, message: '月份格式应为 YYYY-MM' } };
+  }
+
+  const pet = await getAuthorizedPet(userId, petId);
+  if (!pet) {
+    return { error: { status: 404, message: '宠物不存在' } };
+  }
+
+  const [dietRecords, behaviorRecords, weightRecords, medicalRecords, vaccineRecords, aiRows] =
+    await Promise.all([
+      dbAll(
+        'SELECT * FROM diet_records WHERE pet_id = ? AND date >= ? AND date < ? ORDER BY date ASC, time ASC',
+        [petId, range.start, range.end]
+      ),
+      dbAll(
+        'SELECT * FROM behavior_records WHERE pet_id = ? AND date >= ? AND date < ? ORDER BY date ASC',
+        [petId, range.start, range.end]
+      ),
+      dbAll(
+        'SELECT * FROM weight_records WHERE pet_id = ? AND date >= ? AND date < ? ORDER BY date ASC',
+        [petId, range.start, range.end]
+      ),
+      dbAll(
+        'SELECT * FROM medical_records WHERE pet_id = ? AND visit_date >= ? AND visit_date < ? ORDER BY visit_date DESC',
+        [petId, range.start, range.end]
+      ),
+      dbAll(
+        'SELECT * FROM vaccine_records WHERE pet_id = ? AND vaccine_date >= ? AND vaccine_date < ? ORDER BY vaccine_date DESC',
+        [petId, range.start, range.end]
+      ),
+      dbAll(
+        'SELECT * FROM ai_analysis_records WHERE pet_id = ? AND analysis_date >= ? AND analysis_date < ? ORDER BY analysis_date DESC, created_at DESC',
+        [petId, range.start, range.end]
+      )
+    ]);
+
+  return {
+    report: buildMonthlyReport({
+      pet,
+      month,
+      dietRecords,
+      behaviorRecords,
+      weightRecords,
+      medicalRecords,
+      vaccineRecords,
+      aiRecords: aiRows.map(mapAnalysisRow)
+    })
+  };
+}
+
+function pickPdfFontPath() {
+  const candidates = [
+    'C:\\Windows\\Fonts\\msyh.ttc',
+    'C:\\Windows\\Fonts\\msyh.ttf',
+    'C:\\Windows\\Fonts\\simsun.ttc'
+  ];
+  return candidates.find(fontPath => fs.existsSync(fontPath)) || null;
+}
+
+function ensurePdfSpace(doc, neededHeight = 80) {
+  if (doc.y + neededHeight <= doc.page.height - doc.page.margins.bottom) return;
+  doc.addPage();
+}
+
+function drawPdfSectionTitle(doc, title) {
+  ensurePdfSpace(doc, 32);
+  doc.moveDown(0.6);
+  doc.fontSize(15).fillColor('#1f3b57').text(title, { underline: false });
+  doc.moveDown(0.3);
+}
+
+function drawPdfBulletList(doc, items, emptyText) {
+  const list = items && items.length ? items : [emptyText];
+  list.forEach(item => {
+    ensurePdfSpace(doc, 26);
+    doc.fontSize(11).fillColor('#333333').text(`• ${item}`, {
+      width: 500,
+      lineGap: 3
+    });
+  });
+}
+
+function buildTrendSummary(points, label, unit = '') {
+  if (!points || !points.length) return `${label}：本月暂无足够记录。`;
+  const first = Number(points[0].value || 0);
+  const last = Number(points[points.length - 1].value || 0);
+  const delta = last - first;
+  const deltaText = `${delta >= 0 ? '+' : ''}${delta.toFixed(1)}`;
+  return `${label}：从 ${first}${unit} 变化到 ${last}${unit}，阶段变化 ${deltaText}${unit}。`;
+}
+
+function streamMonthlyReportPdf(res, report) {
+  const doc = new PDFDocument({
+    size: 'A4',
+    margin: 48
+  });
+
+  const fontPath = pickPdfFontPath();
+  if (fontPath) {
+    doc.font(fontPath);
+  }
+
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader(
+    'Content-Disposition',
+    `attachment; filename="monthly-report-${report.month}.pdf"`
+  );
+
+  doc.pipe(res);
+
+  doc
+    .fillColor('#1f3b57')
+    .fontSize(22)
+    .text(`${report.pet.name} ${report.month} 月度健康报表`);
+
+  doc
+    .moveDown(0.4)
+    .fontSize(11)
+    .fillColor('#5f6f81')
+    .text(`生成时间：${new Date(report.generatedAt).toLocaleString('zh-CN')}`)
+    .text(`宠物类型：${report.pet.petType || 'cat'}   当前体重：${report.pet.weight || '--'}kg`);
+
+  doc.moveDown(0.8);
+  doc.roundedRect(48, doc.y, 499, 88, 16).fillAndStroke('#fff6ec', '#f4d0aa');
+  doc
+    .fillColor('#9f5d1d')
+    .fontSize(13)
+    .text('健康评分', 70, doc.y - 76)
+    .fontSize(34)
+    .text(String(report.score), 70, doc.y - 48);
+
+  doc
+    .fontSize(11)
+    .fillColor('#6d7782')
+    .text(`平均摄食：${report.kpis.avgDailyFood || '--'}g`, 220, doc.y - 42)
+    .text(`平均饮水：${report.kpis.avgWater || '--'}ml`, 220, doc.y - 24)
+    .text(`排便频率：${report.kpis.avgPotty || '--'}`, 370, doc.y - 42)
+    .text(`异常提醒：${report.kpis.warningCount}`, 370, doc.y - 24);
+
+  drawPdfSectionTitle(doc, '本月亮点');
+  drawPdfBulletList(doc, report.highlights, '本月暂无足够亮点数据。');
+
+  drawPdfSectionTitle(doc, '趋势摘要');
+  drawPdfBulletList(doc, [
+    buildTrendSummary(report.trends.weight, '体重趋势', 'kg'),
+    buildTrendSummary(report.trends.food, '摄食趋势', 'g'),
+    buildTrendSummary(report.trends.water, '饮水趋势', 'ml'),
+    buildTrendSummary(report.trends.analysisRisk, 'AI 风险变化')
+  ], '本月暂无趋势数据。');
+
+  drawPdfSectionTitle(doc, '本月提醒');
+  drawPdfBulletList(
+    doc,
+    (report.alerts || []).map(item => `${item.date} - ${item.text}`),
+    '本月未记录到明显异常提醒。'
+  );
+
+  drawPdfSectionTitle(doc, '下月跟进清单');
+  drawPdfBulletList(doc, report.checklist, '下月暂无线性跟进项。');
+
+  doc
+    .moveDown(1)
+    .fontSize(10)
+    .fillColor('#7a8793')
+    .text('本报表用于日常健康跟踪与复诊沟通，不替代线下兽医诊断。', {
+      align: 'center'
+    });
+
+  doc.end();
+}
+
 async function getAuthorizedPet(userId, petId) {
   return dbGet('SELECT * FROM pets WHERE id = ? AND user_id = ?', [petId, userId]);
 }
@@ -595,6 +789,12 @@ exports.createAiAnalysis = async (req, res) => {
   }
 
   try {
+    const result = await buildMonthlyReportForPet({ userId, petId, month });
+    if (result.error) {
+      return res.status(result.error.status).json({ message: result.error.message });
+    }
+    return res.json(result.report);
+
     const pet = await getAuthorizedPet(userId, petId);
     if (!pet) {
       return res.status(404).json({ message: '宠物不存在' });
