@@ -226,6 +226,44 @@
   margin-top: 16px;
 }
 
+.nutrition-overview {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.nutrition-overview-item {
+  border-radius: 20px;
+  padding: 14px;
+  background: rgba(255, 255, 255, 0.88);
+  border: 1px solid rgba(255, 204, 92, 0.28);
+}
+
+.nutrition-overview-item span {
+  display: block;
+  font-size: 13px;
+  color: var(--text-light);
+}
+
+.nutrition-overview-item strong {
+  display: block;
+  font-size: 24px;
+  color: var(--primary-dark);
+  margin-top: 6px;
+}
+
+.nutrition-overview-item p {
+  margin: 8px 0 0;
+  line-height: 1.6;
+  color: var(--text-light);
+  font-size: 13px;
+}
+
+.nutrition-stack {
+  margin-top: 16px;
+}
+
 .metric-pill,
 .stat-tile,
 .kpi-tile {

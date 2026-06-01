@@ -203,6 +203,228 @@ function deriveNutritionPlan({ pet, weightRecords, dietRecords, behaviorRecords,
   };
 }
 
+function deriveNutritionPlanEnhanced({ pet, weightRecords, dietRecords, behaviorRecords, medicalRecords, aiRecords }) {
+  const petType = pet.pet_type === 'dog' || pet.pet_type === 'large_dog' ? 'dog' : 'cat';
+  const lifeStage = computeLifeStage(pet.birth_date);
+  const sortedWeightRecords = [...weightRecords].sort((a, b) => b.date.localeCompare(a.date));
+  const sortedDietRecords = [...dietRecords].sort((a, b) => `${b.date} ${b.time || ''}`.localeCompare(`${a.date} ${a.time || ''}`));
+  const sortedBehaviorRecords = [...behaviorRecords].sort((a, b) => b.date.localeCompare(a.date));
+  const sortedMedicalRecords = [...medicalRecords].sort((a, b) => (b.visit_date || '').localeCompare(a.visit_date || ''));
+  const sortedAiRecords = [...aiRecords].sort((a, b) => (b.analysis_date || '').localeCompare(a.analysis_date || ''));
+
+  const weightTrend = getRecentWeightChange(weightRecords, pet.weight);
+  const latestWeight = Number(weightTrend.latest || pet.weight || 0);
+  const safeWeight = latestWeight > 0 ? latestWeight : petType === 'cat' ? 4.5 : 12;
+
+  const rerBase = petType === 'cat' ? 70 : 75;
+  const rer = rerBase * Math.pow(safeWeight, 0.75);
+
+  let factor = 1.25;
+  if (lifeStage === 'junior') factor = petType === 'cat' ? 2.1 : 2.3;
+  if (lifeStage === 'senior') factor = petType === 'cat' ? 1.1 : 1.25;
+  if (!pet.sterilized && lifeStage === 'adult') factor += 0.1;
+
+  const recentActivity = sortedBehaviorRecords[0]?.activity_level || '';
+  if (recentActivity.includes('高') || recentActivity.includes('活跃')) factor += 0.15;
+  if (recentActivity.includes('低') || recentActivity.includes('少')) factor -= 0.08;
+  if (weightTrend.pct >= 5) factor -= 0.08;
+  if (weightTrend.pct <= -5) factor += 0.08;
+
+  const targetCalories = Math.max(120, Math.round(rer * factor));
+  const calorieDensity = petType === 'cat' ? 3.8 : 3.6;
+  const dailyFoodGrams = Math.round(targetCalories / calorieDensity);
+  const waterTargetMl = Math.round(safeWeight * (petType === 'cat' ? 55 : 60));
+
+  const recentDietRecords = sortedDietRecords.slice(0, 21);
+  const recentBehaviorRecords = sortedBehaviorRecords.slice(0, 14);
+  const recentMedicalRecords = sortedMedicalRecords.slice(0, 10);
+  const recentAi = sortedAiRecords.slice(0, 8);
+
+  const dailyFoodMap = new Map();
+  for (const item of recentDietRecords) {
+    const current = dailyFoodMap.get(item.date) || 0;
+    dailyFoodMap.set(item.date, current + Number(item.grams || 0));
+  }
+
+  const avgDailyFood = dailyFoodMap.size
+    ? Math.round(average(Array.from(dailyFoodMap.values())))
+    : 0;
+
+  const waterMlValues = recentBehaviorRecords
+    .map(item => Number(item.water_ml || 0))
+    .filter(value => value > 0);
+  const avgWaterMl = waterMlValues.length ? Math.round(average(waterMlValues)) : 0;
+
+  const supplementHistory = Array.from(
+    new Set(recentDietRecords.map(item => item.supplement_name).filter(Boolean))
+  );
+  const recentFoods = Array.from(
+    new Set(recentDietRecords.flatMap(item => [item.food_brand, item.food_product, item.food_type]).filter(Boolean))
+  ).slice(0, 4);
+  const aiFocusTags = Array.from(
+    new Set(recentAi.flatMap(item => item.nutrition_focus || []).filter(Boolean))
+  ).slice(0, 4);
+
+  const notePool = [
+    ...recentBehaviorRecords.map(item => [item.symptoms, item.notes, item.appetite].filter(Boolean).join(' ')),
+    ...recentMedicalRecords.map(item => [item.diagnosis, item.notes, item.symptom].filter(Boolean).join(' ')),
+    ...recentAi.flatMap(item => item.nutrition_focus || []),
+    ...recentAi.map(item => item.summary || '')
+  ].join(' ').toLowerCase();
+
+  const supplements = [];
+  if (notePool.includes('腹泻') || notePool.includes('稀') || notePool.includes('digest')) {
+    supplements.push('益生菌：连用 7-14 天，优先帮助肠道稳定。');
+  }
+  if (notePool.includes('皮肤') || notePool.includes('掉毛') || notePool.includes('红斑')) {
+    supplements.push('鱼油 / Omega-3：支持皮肤屏障和被毛状态。');
+  }
+  if ((petType === 'dog' && safeWeight > 20) || lifeStage === 'senior') {
+    supplements.push('关节支持：氨糖或软骨素可作为中长期保养选项。');
+  }
+  if (supplementHistory.length) {
+    supplements.push(`最近有补充：${supplementHistory.slice(0, 2).join('、')}，建议继续按既有频率观察反应。`);
+  }
+  if (!supplements.length) {
+    supplements.push('基础复合营养支持：优先从完整主粮与规律饮水开始。');
+  }
+
+  const avoidList = [
+    '高油高盐的人类食物',
+    '频繁更换主粮或同时叠加多种零食'
+  ];
+  if (notePool.includes('腹泻') || notePool.includes('稀')) {
+    avoidList.push('高脂零食、奶制品、一次性喂食过量');
+  }
+  if (notePool.includes('皮肤') || notePool.includes('过敏')) {
+    avoidList.push('成分复杂的新零食，优先控制单一蛋白来源');
+  }
+
+  const mealCount = lifeStage === 'junior' ? 3 : 2;
+  const mainProtein = notePool.includes('皮肤') ? '低敏鱼肉 / 鸭肉' : '鸡肉 / 火鸡 / 鱼肉';
+  const mealRatios = mealCount === 3
+    ? [
+      { label: '早餐', ratio: 0.35, detail: '上午以主粮为主，适合搭配少量湿粮提高适口性。' },
+      { label: '加餐', ratio: 0.30, detail: '可放在午间或活动后，避免一次性吃太多。' },
+      { label: '晚餐', ratio: 0.35, detail: '晚间保持稳定份量，避免临睡前加零食。' }
+    ]
+    : [
+      { label: '早餐', ratio: 0.45, detail: '早饭以主粮为主，帮助白天维持稳定能量。' },
+      { label: '晚餐', ratio: 0.55, detail: '晚饭略高于早饭，保持全天摄入平衡。' }
+    ];
+
+  const mealBreakdown = mealRatios.map(item => ({
+    label: item.label,
+    grams: Math.max(1, Math.round(dailyFoodGrams * item.ratio)),
+    detail: item.detail
+  }));
+
+  const appetiteText = recentBehaviorRecords[0]?.appetite || '';
+  const intakeDelta = avgDailyFood ? avgDailyFood - dailyFoodGrams : 0;
+
+  const dataOverview = [
+    {
+      label: '关联饮食记录',
+      value: `${recentDietRecords.length} 条`,
+      detail: dailyFoodMap.size ? `覆盖 ${dailyFoodMap.size} 天，平均 ${avgDailyFood || '--'}g/天` : '当前饮食记录较少'
+    },
+    {
+      label: '体重参考',
+      value: `${safeWeight} kg`,
+      detail: sortedWeightRecords.length >= 2 ? `近阶段变化 ${weightTrend.delta >= 0 ? '+' : ''}${weightTrend.delta.toFixed(2)}kg / ${weightTrend.pct >= 0 ? '+' : ''}${weightTrend.pct.toFixed(1)}%` : '体重趋势数据不足'
+    },
+    {
+      label: '行为与饮水',
+      value: `${recentBehaviorRecords.length} 条`,
+      detail: avgWaterMl ? `已记录饮水均值 ${avgWaterMl}ml/天` : '建议补充饮水记录'
+    },
+    {
+      label: 'AI / 医疗参考',
+      value: `${recentAi.length + recentMedicalRecords.length} 条`,
+      detail: aiFocusTags.length ? `重点关注 ${aiFocusTags.join('、')}` : '以基础健康维持为主'
+    }
+  ];
+
+  const focusSummary = [
+    {
+      title: '热量与体重',
+      detail: avgDailyFood
+        ? `最近记录的平均日摄入约 ${avgDailyFood}g，和当前建议 ${dailyFoodGrams}g/天 对比，可作为后续调参基线。`
+        : `当前先按 ${dailyFoodGrams}g/天 作为起始目标，建议连续记录 5-7 天后再校正。`
+    },
+    {
+      title: '饮水与代谢',
+      detail: avgWaterMl
+        ? `最近饮水记录均值约 ${avgWaterMl}ml/天，建议目标维持或提升到 ${waterTargetMl}ml/天。`
+        : `当前缺少稳定饮水记录，建议把每日饮水补录起来，目标值约 ${waterTargetMl}ml/天。`
+    },
+    {
+      title: 'AI 与症状关联',
+      detail: aiFocusTags.length
+        ? `最近 AI 关注点集中在 ${aiFocusTags.join('、')}，营养方案已围绕这些方向做了倾斜。`
+        : '最近没有明显 AI 营养关注点，本次方案以基础维持、体重管理和饮水结构为主。'
+    }
+  ];
+
+  const hydrationPlan = [
+    avgWaterMl && avgWaterMl < waterTargetMl
+      ? `当前饮水均值偏低，建议把湿粮、温水泡粮或流动饮水器一起用上，逐步接近 ${waterTargetMl}ml/天。`
+      : `保持多点供水，日目标饮水量约 ${waterTargetMl}ml。`,
+    petType === 'cat'
+      ? '猫咪更适合分散式饮水点位，可在主活动区和休息区各放 1 个水碗。'
+      : '狗狗外出和运动后可单独补水，炎热天气建议额外观察饮水是否明显增加。',
+    '若连续出现饮水骤降、尿量异常或精神差，建议结合行为记录尽快复核。'
+  ];
+
+  const recommendedPairing = [
+    `主蛋白建议：${mainProtein}，优先完整配方主粮。`,
+    recentFoods.length
+      ? `最近常见食物：${recentFoods.join('、')}，新旧主粮切换建议控制在 5-7 天渐进完成。`
+      : '主粮切换建议控制在 5-7 天渐进完成，避免突然更换。',
+    '零食总量控制在全天热量的 10% 以内，训练奖励尽量从主粮中预留。',
+    '可把一部分主粮放入益智喂食器，提升进食节奏和饱腹感。'
+  ];
+
+  return {
+    generatedAt: new Date().toISOString(),
+    pet: {
+      id: pet.id,
+      name: pet.name,
+      petType,
+      lifeStage,
+      weight: safeWeight
+    },
+    summary: `根据 ${pet.name} 最近的体重、饮食、行为和 AI 记录，当前建议以 ${dailyFoodGrams}g 左右主粮和 ${waterTargetMl}ml 饮水作为日常基线，再结合近 1-2 周记录逐步微调。`,
+    targets: {
+      calories: targetCalories,
+      dailyFoodGrams,
+      waterTargetMl,
+      mealCount
+    },
+    dataOverview,
+    focusSummary,
+    mealBreakdown,
+    hydrationPlan,
+    mealPlan: mealBreakdown.map(item => `${item.label}：约 ${item.grams}g。${item.detail}`),
+    recommendedPairing,
+    supplements,
+    avoidList,
+    signals: [
+      weightTrend.pct >= 5
+        ? '近阶段体重偏上行，建议先控制零食和额外加餐，再观察 2 周。'
+        : weightTrend.pct <= -5
+          ? '近阶段体重有下降，建议复核食欲、进食完成度和热量摄入。'
+          : '近期体重总体稳定，可按当前方案继续执行并小幅校准。',
+      avgDailyFood
+        ? `最近记录的平均摄入约 ${avgDailyFood}g/天，与建议值相差 ${intakeDelta >= 0 ? '+' : ''}${Math.round(intakeDelta)}g。`
+        : '当前缺少连续饮食记录，建议先连续补录 5-7 天再做更精细调参。',
+      appetiteText
+        ? `最近一次食欲记录：${appetiteText}。`
+        : '最近暂无明确食欲异常记录，可继续观察进食速度和剩粮情况。'
+    ]
+  };
+}
+
 function buildMonthlyReport({
   pet,
   month,
@@ -487,7 +709,7 @@ exports.getNutritionPlan = async (req, res) => {
       dbAll('SELECT * FROM ai_analysis_records WHERE pet_id = ? ORDER BY analysis_date DESC, created_at DESC LIMIT 12', [petId])
     ]);
 
-    const plan = deriveNutritionPlan({
+    const plan = deriveNutritionPlanEnhanced({
       pet,
       weightRecords,
       dietRecords,

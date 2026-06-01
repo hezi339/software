@@ -564,6 +564,80 @@
     `;
   }
 
+  function renderNutritionPlanEnhanced(plan) {
+    const target = $('nutritionResult');
+    if (!target) return;
+
+    const overviewCards = (plan.dataOverview || []).map(item => `
+      <div class="nutrition-overview-item">
+        <span>${escapeHtml(item.label)}</span>
+        <strong>${escapeHtml(item.value)}</strong>
+        <p>${escapeHtml(item.detail || '')}</p>
+      </div>
+    `).join('');
+
+    const focusSummary = (plan.focusSummary || []).map(item => `
+      <li><strong>${escapeHtml(item.title)}</strong>：${escapeHtml(item.detail)}</li>
+    `).join('');
+
+    const mealBreakdown = (plan.mealBreakdown || []).map(item => `
+      <li><strong>${escapeHtml(item.label)}</strong>：约 ${escapeHtml(item.grams)}g，${escapeHtml(item.detail)}</li>
+    `).join('');
+
+    target.innerHTML = `
+      <div class="member-b-card">
+        <div class="member-b-header" style="margin-bottom: 10px;">
+          <div>
+            <h4>${escapeHtml(plan.pet.name)} 的营养搭配建议</h4>
+            <p>${escapeHtml(plan.summary)}</p>
+          </div>
+          <div class="member-b-status normal">${escapeHtml(plan.pet.lifeStage)}</div>
+        </div>
+        <div class="nutrition-stats">
+          <div class="stat-tile">目标热量<strong>${escapeHtml(plan.targets.calories)} kcal</strong></div>
+          <div class="stat-tile">主粮建议<strong>${escapeHtml(plan.targets.dailyFoodGrams)} g</strong></div>
+          <div class="stat-tile">饮水建议<strong>${escapeHtml(plan.targets.waterTargetMl)} ml</strong></div>
+          <div class="stat-tile">分餐次数<strong>${escapeHtml(plan.targets.mealCount)} 次</strong></div>
+        </div>
+        ${overviewCards ? `<div class="nutrition-overview">${overviewCards}</div>` : ''}
+        <div class="report-panels">
+          <div class="member-b-card">
+            <h4>餐次方案</h4>
+            <ul class="bullet-list">${plan.mealPlan.map(item => `<li>${escapeHtml(item)}</li>`).join('')}</ul>
+          </div>
+          ${mealBreakdown ? `
+          <div class="member-b-card">
+            <h4>分餐拆解</h4>
+            <ul class="bullet-list">${mealBreakdown}</ul>
+          </div>` : ''}
+          <div class="member-b-card">
+            <h4>营养搭配</h4>
+            <ul class="bullet-list">${plan.recommendedPairing.map(item => `<li>${escapeHtml(item)}</li>`).join('')}</ul>
+          </div>
+          <div class="member-b-card">
+            <h4>补充建议</h4>
+            <ul class="bullet-list">${plan.supplements.map(item => `<li>${escapeHtml(item)}</li>`).join('')}</ul>
+          </div>
+          <div class="member-b-card">
+            <h4>避免事项</h4>
+            <ul class="bullet-list">${plan.avoidList.map(item => `<li>${escapeHtml(item)}</li>`).join('')}</ul>
+          </div>
+        </div>
+        ${focusSummary ? `
+        <div class="member-b-card nutrition-stack">
+          <h4>方案依据</h4>
+          <ul class="bullet-list">${focusSummary}</ul>
+        </div>` : ''}
+        ${(plan.hydrationPlan || []).length ? `
+        <div class="member-b-card nutrition-stack">
+          <h4>补水与执行建议</h4>
+          <ul class="bullet-list">${plan.hydrationPlan.map(item => `<li>${escapeHtml(item)}</li>`).join('')}</ul>
+        </div>` : ''}
+        <div class="note-box">${plan.signals.map(item => escapeHtml(item)).join(' ')}</div>
+      </div>
+    `;
+  }
+
   async function loadNutritionPlan() {
     const pet = getSelectedPet('nutritionPetSelect');
     if (!pet || !hasToken()) {
@@ -573,7 +647,7 @@
 
     try {
       const plan = await apiFetch(`http://localhost:3000/api/pets/${pet.id}/nutrition-plan`);
-      renderNutritionPlan(plan);
+      renderNutritionPlanEnhanced(plan);
     } catch (error) {
       console.error('Nutrition plan load failed:', error);
       setEmptyState('nutritionResult', '营养方案生成失败，请稍后重试。');
